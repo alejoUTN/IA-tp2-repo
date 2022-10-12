@@ -5,3 +5,6 @@ Download below:
 https://zenodo.org/record/1290750#.WzCwSRyxXMU
 IRMAS-TestingData-Part1.zip
 IRMAS-TrainingData.zip
+
+Reference:
+https://github.com/tensorflow/docs/blob/master/site/en/tutorials/audio/simple_audio.ipynb
