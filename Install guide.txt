@@ -8,3 +8,4 @@ IRMAS-TrainingData.zip
 
 Reference:
 https://github.com/tensorflow/docs/blob/master/site/en/tutorials/audio/simple_audio.ipynb
+https://towardsdatascience.com/visualizing-backpropagation-in-neural-network-training-2647f5977fdb

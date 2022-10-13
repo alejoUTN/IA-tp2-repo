@@ -393,7 +393,7 @@ print('Instruments:', instruments)
 # Import instrument data
 train_ds, val_ds = audio_dataset_from_directory(
     directory=data_dir,
-    batch_size=64,
+    batch_size=4,
     validation_split=0.2,
     seed=0,
     output_sequence_length=32000,
@@ -421,18 +421,63 @@ for example_spectrograms, example_spect_labels in train_spectrogram_ds.take(1):
   break
 
 # Print spectogram datasets
-rows = 3
-cols = 3
-n = rows*cols
-fig, axes = plt.subplots(rows, cols, figsize=(16, 9))
+## rows = 3
+## cols = 3
+## n = rows*cols
+## fig, axes = plt.subplots(rows, cols, figsize=(16, 9))
+## 
+## for i in range(n):
+##     r = i // cols
+##     c = i % cols
+##     ax = axes[r][c]
+##     plot_spectrogram(example_spectrograms[i].numpy(), ax)
+##     ax.set_title(instruments[example_spect_labels[i].numpy()])
+## 
+## plt.show()
 
-for i in range(n):
-    r = i // cols
-    c = i % cols
-    ax = axes[r][c]
-    plot_spectrogram(example_spectrograms[i].numpy(), ax)
-    ax.set_title(instruments[example_spect_labels[i].numpy()])
+##
+## Build and train the model
+##
 
+# Add Dataset.cache and Dataset.prefetch operations to reduce read latency while training the model
+train_spectrogram_ds = train_spectrogram_ds.cache().shuffle(10000).prefetch(tf.data.AUTOTUNE)
+val_spectrogram_ds = val_spectrogram_ds.cache().prefetch(tf.data.AUTOTUNE)
+test_spectrogram_ds = test_spectrogram_ds.cache().prefetch(tf.data.AUTOTUNE)
+
+def build_model():
+  model = models.Sequential()
+  model.add(layers.Dense(32, activation='relu', input_shape=(249, 129, 1)))
+  model.add(layers.Dense(32, activation='relu'))
+  model.add(layers.Dense(1))
+  model.compile(optimizer='rmsprop', loss='mse', metrics=['mae'])
+  return model
+
+
+#x_train = list(map(lambda x: x[0], train_spectrogram_ds))
+#y_train = list(map(lambda x: x[1], train_spectrogram_ds))
+
+num_epochs = 10
+model = build_model()
+# model_history = model.fit(train_spectrogram_ds, validation_data=val_spectrogram_ds, epochs=num_epochs, batch_size=4, verbose=1)
+# model.evaluate(test_spectrogram_ds, return_dict = True)
+
+
+y_pred = model.predict(test_spectrogram_ds)
+y_pred = tf.argmax(y_pred, axis=1)
+y_pred = tf.squeeze(tf.slice(y_pred, [0,0,0], [672,1,1]))
+y_true = tf.concat(list(test_spectrogram_ds.map(lambda s,lab: lab)), axis=0)
+
+print("Y_PRED")
+print(y_pred)
+print("Y_TRUE")
+print(y_true)
+
+confusion_mtx = tf.math.confusion_matrix(y_true, y_pred)
+plt.figure(figsize=(10, 8))
+sns.heatmap(confusion_mtx,
+            xticklabels=instruments,
+            yticklabels=instruments,
+            annot=True, fmt='g')
+plt.xlabel('Prediction')
+plt.ylabel('Label')
 plt.show()
-
-
