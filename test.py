@@ -10,7 +10,6 @@ from tensorflow.keras import layers
 from tensorflow.keras import models
 from IPython import display
 from keras.utils import dataset_utils
-from tensorflow.python.util.tf_export import keras_export
 
 
 ##
@@ -334,12 +333,40 @@ def paths_and_labels_to_dataset(
         audio_ds = tf.data.Dataset.zip((audio_ds, label_ds))
     return audio_ds
 
-##
-## Functions - Internal
-##
+
+
+# Set the seed value for experiment reproducibility.
+seed = 42
+tf.random.set_seed(seed)
+np.random.seed(seed)
+
+#DATASET_PATH = 'data/mini_speech_commands'
+DATASET_PATH = 'data/instruments/IRMAS-TrainingData'
+
+data_dir = pathlib.Path(DATASET_PATH)
+
+commands = np.array(tf.io.gfile.listdir(str(data_dir)))
+commands = commands[commands != 'README.md']
+
+train_ds, val_ds =audio_dataset_from_directory(
+    directory=data_dir,
+    batch_size=64,
+    validation_split=0.2,
+    seed=0,
+    output_sequence_length=32000,
+    subset='both')
+
+label_names = np.array(train_ds.class_names)
+
 def squeeze(audio, labels):
   audio = tf.squeeze(audio, axis=-1)
   return audio, labels
+
+train_ds = train_ds.map(squeeze, tf.data.AUTOTUNE)
+val_ds = val_ds.map(squeeze, tf.data.AUTOTUNE)
+
+test_ds = val_ds.shard(num_shards=2, index=0)
+val_ds = val_ds.shard(num_shards=2, index=1)
 
 def get_spectrogram(waveform):
   # Convert the waveform to a spectrogram via a STFT.
@@ -372,107 +399,73 @@ def make_spec_ds(ds):
       map_func=lambda audio,label: (get_spectrogram(audio), label),
       num_parallel_calls=tf.data.AUTOTUNE)
 
-##
-## Start
-##
-
-# Set the seed value for experiment reproducibility.
-seed = 42
-tf.random.set_seed(seed)
-np.random.seed(seed)
-
-# Get instrument data
-DATASET_PATH = 'data/instruments/IRMAS-TrainingData'
-#DATASET_PATH = 'data/mini_speech_commands'
-
-data_dir = pathlib.Path(DATASET_PATH)
-instruments = np.array(tf.io.gfile.listdir(str(data_dir)))
-instruments = instruments[instruments != 'README.txt']
-print('Instruments:', instruments)
-
-# Import instrument data
-train_ds, val_ds = audio_dataset_from_directory(
-    directory=data_dir,
-    batch_size=4,
-    validation_split=0.2,
-    seed=0,
-    output_sequence_length=32000,
-    subset='both')
-
-label_names = np.array(train_ds.class_names)
-print("label names:", label_names)
-
-
-# Squeeze data to drop the extra axis (single channel audio)
-train_ds = train_ds.map(squeeze, tf.data.AUTOTUNE)
-val_ds = val_ds.map(squeeze, tf.data.AUTOTUNE)
-
-# Split validation set in 2 halves
-test_ds = val_ds.shard(num_shards=2, index=0)
-val_ds = val_ds.shard(num_shards=2, index=1)
-
-# Create spectogram datasets from audio datasets
 train_spectrogram_ds = make_spec_ds(train_ds)
 val_spectrogram_ds = make_spec_ds(val_ds)
 test_spectrogram_ds = make_spec_ds(test_ds)
 
-# Examine the spectrograms for different examples of the dataset
-for example_spectrograms, example_spect_labels in train_spectrogram_ds.take(1):
-  break
-
-# Print spectogram datasets
-## rows = 3
-## cols = 3
-## n = rows*cols
-## fig, axes = plt.subplots(rows, cols, figsize=(16, 9))
-## 
-## for i in range(n):
-##     r = i // cols
-##     c = i % cols
-##     ax = axes[r][c]
-##     plot_spectrogram(example_spectrograms[i].numpy(), ax)
-##     ax.set_title(instruments[example_spect_labels[i].numpy()])
-## 
-## plt.show()
-
-##
-## Build and train the model
-##
-
-# Add Dataset.cache and Dataset.prefetch operations to reduce read latency while training the model
 train_spectrogram_ds = train_spectrogram_ds.cache().shuffle(10000).prefetch(tf.data.AUTOTUNE)
 val_spectrogram_ds = val_spectrogram_ds.cache().prefetch(tf.data.AUTOTUNE)
 test_spectrogram_ds = test_spectrogram_ds.cache().prefetch(tf.data.AUTOTUNE)
 
-def build_model():
-  model = models.Sequential()
-  model.add(layers.Dense(32, activation='relu', input_shape=(249, 129, 1)))
-  model.add(layers.Dense(32, activation='relu'))
-  model.add(layers.Dense(1))
-  model.compile(optimizer='rmsprop', loss='mse', metrics=['mae'])
-  return model
+for example_spectrograms, example_spect_labels in train_spectrogram_ds.take(1):
+  break
 
+input_shape = example_spectrograms.shape[1:]
+print('Input shape:', input_shape)
+num_labels = len(commands)
 
-#x_train = list(map(lambda x: x[0], train_spectrogram_ds))
-#y_train = list(map(lambda x: x[1], train_spectrogram_ds))
+# Instantiate the `tf.keras.layers.Normalization` layer.
+norm_layer = layers.Normalization()
+# Fit the state of the layer to the spectrograms
+# with `Normalization.adapt`.
+norm_layer.adapt(data=train_spectrogram_ds.map(map_func=lambda spec, label: spec))
 
-num_epochs = 2
-model = build_model()
-model_history = model.fit(train_spectrogram_ds, validation_data=val_spectrogram_ds, epochs=num_epochs, batch_size=4, verbose=1)
-model.evaluate(test_spectrogram_ds, return_dict = True)
+model = models.Sequential([
+    layers.Input(shape=input_shape),
+    layers.Dense(16, activation='relu'),
+    layers.Dense(16, activation='relu'),
+    layers.Dense(16, activation='relu'),
+    # Downsample the input.
+    #layers.Resizing(32, 32),
+    # Normalize.
+    #norm_layer,
+    #layers.Conv2D(32, 3, activation='relu'),
+    #layers.Conv2D(64, 3, activation='relu'),
+    #layers.MaxPooling2D(),
+    #layers.Dropout(0.25),
+    layers.Flatten(),
+    #layers.Dense(1024, activation='relu'),
+    #layers.Dropout(0.5),
+    layers.Dense(num_labels),
+])
 
-y_true = tf.concat(list(test_spectrogram_ds.map(lambda s,lab: lab)), axis=0)
+model.summary()
+
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(),
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=['accuracy'],
+)
+
+EPOCHS = 10
+history = model.fit(
+    train_spectrogram_ds,
+    validation_data=val_spectrogram_ds,
+    epochs=EPOCHS,
+    callbacks=tf.keras.callbacks.EarlyStopping(verbose=1, patience=2),
+)
+
+model.evaluate(test_spectrogram_ds, return_dict=True)
+
 y_pred = model.predict(test_spectrogram_ds)
 y_pred = tf.argmax(y_pred, axis=1)
-y_pred = tf.squeeze(tf.slice(y_pred, [0,0,0], [195,1,1]))
-
+y_true = tf.concat(list(test_spectrogram_ds.map(lambda s,lab: lab)), axis=0)
 
 confusion_mtx = tf.math.confusion_matrix(y_true, y_pred)
-print(confusion_mtx)
 plt.figure(figsize=(10, 8))
 sns.heatmap(confusion_mtx,
-            xticklabels=instruments,
-            yticklabels=instruments,
+            xticklabels=commands,
+            yticklabels=commands,
             annot=True, fmt='g')
 plt.xlabel('Prediction')
 plt.ylabel('Label')
