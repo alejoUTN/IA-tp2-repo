@@ -333,41 +333,6 @@ def paths_and_labels_to_dataset(
         audio_ds = tf.data.Dataset.zip((audio_ds, label_ds))
     return audio_ds
 
-
-
-# Set the seed value for experiment reproducibility.
-seed = 42
-tf.random.set_seed(seed)
-np.random.seed(seed)
-
-#DATASET_PATH = 'data/mini_speech_commands'
-DATASET_PATH = 'data/instruments/IRMAS-TrainingData'
-
-data_dir = pathlib.Path(DATASET_PATH)
-
-commands = np.array(tf.io.gfile.listdir(str(data_dir)))
-commands = commands[commands != 'README.md']
-
-train_ds, val_ds =audio_dataset_from_directory(
-    directory=data_dir,
-    batch_size=64,
-    validation_split=0.2,
-    seed=0,
-    output_sequence_length=32000,
-    subset='both')
-
-label_names = np.array(train_ds.class_names)
-
-def squeeze(audio, labels):
-  audio = tf.squeeze(audio, axis=-1)
-  return audio, labels
-
-train_ds = train_ds.map(squeeze, tf.data.AUTOTUNE)
-val_ds = val_ds.map(squeeze, tf.data.AUTOTUNE)
-
-test_ds = val_ds.shard(num_shards=2, index=0)
-val_ds = val_ds.shard(num_shards=2, index=1)
-
 def get_spectrogram(waveform):
   # Convert the waveform to a spectrogram via a STFT.
   spectrogram = tf.signal.stft(
@@ -399,6 +364,38 @@ def make_spec_ds(ds):
       map_func=lambda audio,label: (get_spectrogram(audio), label),
       num_parallel_calls=tf.data.AUTOTUNE)
 
+def squeeze(audio, labels):
+  audio = tf.squeeze(audio, axis=-1)
+  return audio, labels
+
+# Set the seed value for experiment reproducibility.
+seed = 42
+tf.random.set_seed(seed)
+np.random.seed(seed)
+
+DATASET_PATH = 'data/instruments/IRMAS-TrainingData'
+
+data_dir = pathlib.Path(DATASET_PATH)
+
+commands = np.array(tf.io.gfile.listdir(str(data_dir)))
+commands = commands[commands != 'README.md']
+
+train_ds, val_ds =audio_dataset_from_directory(
+    directory=data_dir,
+    batch_size=64,
+    validation_split=0.2,
+    seed=0,
+    output_sequence_length=32000,
+    subset='both')
+
+label_names = np.array(train_ds.class_names)
+
+train_ds = train_ds.map(squeeze, tf.data.AUTOTUNE)
+val_ds = val_ds.map(squeeze, tf.data.AUTOTUNE)
+
+test_ds = val_ds.shard(num_shards=2, index=0)
+val_ds = val_ds.shard(num_shards=2, index=1)
+
 train_spectrogram_ds = make_spec_ds(train_ds)
 val_spectrogram_ds = make_spec_ds(val_ds)
 test_spectrogram_ds = make_spec_ds(test_ds)
@@ -422,20 +419,11 @@ norm_layer.adapt(data=train_spectrogram_ds.map(map_func=lambda spec, label: spec
 
 model = models.Sequential([
     layers.Input(shape=input_shape),
-    layers.Dense(16, activation='relu'),
-    layers.Dense(16, activation='relu'),
-    layers.Dense(16, activation='relu'),
-    # Downsample the input.
-    #layers.Resizing(32, 32),
-    # Normalize.
-    #norm_layer,
-    #layers.Conv2D(32, 3, activation='relu'),
-    #layers.Conv2D(64, 3, activation='relu'),
-    #layers.MaxPooling2D(),
-    #layers.Dropout(0.25),
+    layers.Dense(32, activation='relu'),
+    layers.Dense(32, activation='relu'),
+    layers.Dense(32, activation='relu'),
+    layers.Dense(32, activation='relu'),
     layers.Flatten(),
-    #layers.Dense(1024, activation='relu'),
-    #layers.Dropout(0.5),
     layers.Dense(num_labels),
 ])
 
@@ -447,12 +435,11 @@ model.compile(
     metrics=['accuracy'],
 )
 
-EPOCHS = 10
+EPOCHS = 20
 history = model.fit(
     train_spectrogram_ds,
     validation_data=val_spectrogram_ds,
     epochs=EPOCHS,
-    callbacks=tf.keras.callbacks.EarlyStopping(verbose=1, patience=2),
 )
 
 model.evaluate(test_spectrogram_ds, return_dict=True)
@@ -462,6 +449,7 @@ y_pred = tf.argmax(y_pred, axis=1)
 y_true = tf.concat(list(test_spectrogram_ds.map(lambda s,lab: lab)), axis=0)
 
 confusion_mtx = tf.math.confusion_matrix(y_true, y_pred)
+
 plt.figure(figsize=(10, 8))
 sns.heatmap(confusion_mtx,
             xticklabels=commands,
@@ -469,4 +457,88 @@ sns.heatmap(confusion_mtx,
             annot=True, fmt='g')
 plt.xlabel('Prediction')
 plt.ylabel('Label')
+
+
+def precision(mx):
+    precision_1_base = 0
+    precision_2_base = 0
+    precision_3_base = 0
+    for i in range(3):
+        precision_1_base += int(mx[i][0])
+    
+    if precision_1_base != 0:
+        precision_1 = int(mx[0][0])/precision_1_base
+    else:
+        precision_1 = -1
+
+    for i in range(3):
+        precision_2_base += int(mx[i][1])
+    
+    if precision_2_base != 0:
+        precision_2 = int(mx[1][1])/precision_2_base
+    else:
+        precision_2 = -1
+
+    for i in range(3):
+        precision_3_base += int(mx[i][2])
+    if precision_3_base != 0:
+        precision_3 = int(mx[2][2])/precision_3_base
+    else:
+        precision_3 = -1
+
+    return (precision_1,precision_2,precision_3)
+
+def recuperacion(mx):
+    recuperacion_1_base = 0
+    recuperacion_2_base = 0
+    recuperacion_3_base = 0
+    for i in range(3):
+        recuperacion_1_base += int(mx[0][i])
+    recuperacion_1 = int(mx[0][0])/recuperacion_1_base
+
+    for i in range(3):
+        recuperacion_2_base += int(mx[1][i])
+    recuperacion_2 = int(mx[1][1])/recuperacion_2_base
+
+    for i in range(3):
+        recuperacion_3_base += int(mx[2][i])
+    recuperacion_3 = int(mx[2][2])/recuperacion_3_base
+    return (recuperacion_1,recuperacion_2,recuperacion_3)
+
+
+acc = history.history['accuracy']
+val_acc = history.history['val_accuracy']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+
+epochs = range(1, len(acc) + 1)
+
+# Exactitud = accuracy
+print("Exactitud: "+str(acc[-1]))
+# Precision
+p = precision(confusion_mtx)
+print("Precisión")
+print("acoustic-guitar:"+str(p[0]))
+print("piano:"+str(p[1]))
+print("trumpet:"+str(p[2]))
+
+# Recuperacion
+r = recuperacion(confusion_mtx)
+print("Recuperacion")
+print("acoustic-guitar:"+str(r[0]))
+print("piano:"+str(r[1]))
+print("trumpet:"+str(r[2]))
+
+plt.figure()
+plt.plot(epochs, acc, 'bo', label='Training acc')
+plt.plot(epochs, val_acc, 'b', label='Validation acc')
+plt.title('Training and validation accuracy')
+plt.legend()
+
+plt.figure()
+plt.plot(epochs, loss, 'bo', label='Training loss')
+plt.plot(epochs, val_loss, 'b', label='Validation loss')
+plt.title('Training and validation loss')
+plt.legend()
+
 plt.show()
